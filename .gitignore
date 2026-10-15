@@ -1,0 +1,29 @@
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment and local configuration
+.env
+.env.*
+!.env.example
+*.log
+
+# Private biometric data and generated artifacts
+data/registered_faces/*
+!data/registered_faces/.gitkeep
+data/embeddings/*
+!data/embeddings/.gitkeep
+outputs/*
+!outputs/.gitkeep
+models/*.onnx
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
