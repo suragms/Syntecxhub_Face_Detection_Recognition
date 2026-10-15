@@ -34,6 +34,8 @@ Registration creates a new immutable JSON/NPZ generation. `manifest.json` is ato
 
 `FaceRegistrationService` is shared by photo and webcam workflows. It requires exactly one YuNet detection, checks size/sharpness/confidence, creates an SFace embedding, optionally retains an aligned crop, and commits only a valid sample. Names are validated and UUIDs are used for internal identity IDs.
 
+Live enrollment and recognition share `core/camera.py`. It applies the requested 640×480 defaults, logs backend and negotiated dimensions, tries DirectShow → Media Foundation → OpenCV default, buffers a valid warm-up frame, retries only malformed reads, and releases rejected/active handles safely. A dark or repeated valid frame remains valid and is never silently discarded. Enrollment composes a fresh frame-local header, bounded status, clipped face box, and footer so the status is drawn once rather than colliding with the progress text.
+
 ## GUI scope
 
 The initial deliverable is a tested CLI and backend. A Tkinter UI is intentionally deferred so it cannot duplicate model or persistence logic; a future UI must call these same services.

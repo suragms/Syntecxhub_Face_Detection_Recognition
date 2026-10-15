@@ -19,6 +19,12 @@ Coverage includes:
 - Registration no-face/multiple-face rejection and local persistence.
 - Image input validation and multi-face summary.
 - CLI parser/error behavior and model hash verification.
+- Shared camera backend fallback, requested dimensions, warm-up retries, dark-frame acceptance, bounded invalid reads, and safe release/window cleanup.
+- Enrollment preview text layout, clipped boxes, one status placement, and bounded coordinates.
+
+## Manual Windows camera diagnostics
+
+For a real camera issue, record the Windows version, Python/OpenCV version, camera index, selected backend from the log, requested versus driver-reported dimensions, and whether the Windows Camera app can display the device. Check camera privacy permissions, a physical privacy shutter, and other applications holding the camera. The automatic helper tries DirectShow, Media Foundation, and OpenCV's default backend; it rejects only structurally invalid frames, not genuinely dark or static scenes.
 
 ## Manual Windows checklist
 

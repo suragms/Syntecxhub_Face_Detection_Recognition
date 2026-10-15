@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from core.errors import MultipleFacesDetectedError, NoFaceDetectedError
-from core.face_registration import FaceRegistrationService
+from core.face_registration import FaceRegistrationService, _compose_enrollment_preview
 
 
 class FakeDetector:
@@ -48,3 +48,31 @@ def test_registration_saves_a_local_embedding(paths, normalized_embedding, yunet
     result = service.register_frame("Ada", frame, retain_source=False)
     assert result.person.display_name == "Ada"
     assert len(database.load_embeddings()) == 1
+
+
+def test_enrollment_compositor_draws_status_once_and_clips_box(monkeypatch, yunet_detection):
+    import core.face_registration as registration
+
+    calls = []
+    monkeypatch.setattr(registration.cv2, "putText", lambda _frame, text, point, *_args: calls.append((text, point)))
+    monkeypatch.setattr(registration.cv2, "rectangle", lambda _frame, start, end, *_args: calls.append(("rectangle", start, end)))
+    frame = np.zeros((80, 120, 3), dtype=np.uint8)
+    oversized = type(yunet_detection)(
+        bbox=(-30, -20, 200, 130),
+        confidence=yunet_detection.confidence,
+        detector="yunet",
+        landmarks=yunet_detection.landmarks,
+        raw=yunet_detection.raw,
+    )
+    status = "This is a deliberately long status message"
+    _compose_enrollment_preview(frame, oversized, "Samples: 0/10", status)
+    labels = [text for text, _point, *rest in calls if text != "rectangle"]
+    assert len(labels) == 3  # header, one status, footer
+    rectangle = next(item for item in calls if item[0] == "rectangle")
+    assert all(0 <= coordinate < 120 for coordinate in (rectangle[1][0], rectangle[2][0]))
+    assert all(0 <= coordinate < 80 for coordinate in (rectangle[1][1], rectangle[2][1]))
+    for item in calls:
+        if item[0] != "rectangle":
+            _text, (x, y), *_ = item
+            assert 0 <= x < 120
+            assert 0 <= y < 80

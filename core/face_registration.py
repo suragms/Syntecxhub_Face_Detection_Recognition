@@ -8,7 +8,8 @@ import time
 import cv2
 import numpy as np
 
-from config import DEFAULT_BLUR_THRESHOLD, AppPaths
+from config import DEFAULT_BLUR_THRESHOLD, DEFAULT_CAMERA_HEIGHT, DEFAULT_CAMERA_WIDTH, AppPaths
+from core.camera import CameraConfig, open_camera, safe_destroy_window
 from core.errors import CameraOpenError, EnrollmentError, MultipleFacesDetectedError, NoFaceDetectedError
 from core.face_database import FaceDatabase, Person, SampleMetadata
 from core.face_detector import FaceDetection, FaceDetector
@@ -86,32 +87,36 @@ class FaceRegistrationService:
         append: bool = False,
         retain_source: bool = True,
         min_interval_seconds: float = 0.65,
+        width: int = DEFAULT_CAMERA_WIDTH,
+        height: int = DEFAULT_CAMERA_HEIGHT,
     ) -> list[EnrollmentResult]:
         if samples < 1:
             raise EnrollmentError("Enrollment sample count must be at least one.")
-        capture = _open_camera(camera_index)
+        session = open_camera(camera_index, CameraConfig(width=width, height=height))
         captured: list[tuple[np.ndarray, FaceDetection]] = []
         last_capture_time = 0.0
+        window_shown = False
         try:
             while len(captured) < samples:
-                ok, frame = capture.read()
-                if not ok or frame is None:
-                    raise CameraOpenError("Camera stopped returning frames during enrollment.")
+                frame = session.read()
                 preview = frame.copy()
                 message = "Show one face clearly"
+                detection: FaceDetection | None = None
                 try:
                     detections = self.detector.detect(frame)
                     if len(detections) == 1 and detections[0].supports_recognition:
-                        quality = self.quality_score(frame, detections[0])
+                        detection = detections[0]
+                        quality = self.quality_score(frame, detection)
                         message = "Press SPACE to capture" if quality > 0 else "Improve lighting or focus"
-                        _draw_enrollment_box(preview, detections[0], message)
+                    elif len(detections) > 1:
+                        message = "Only one face may be enrolled"
                     else:
                         message = "Need exactly one YuNet face"
                 except Exception as exc:  # Preview remains recoverable; failures are visible.
                     message = f"Detection error: {exc}"
-                cv2.putText(preview, f"{len(captured)}/{samples}  {message}", (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 220, 255), 2)
-                cv2.putText(preview, "SPACE: capture  Q: cancel", (12, preview.shape[0] - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+                _compose_enrollment_preview(preview, detection, f"Samples: {len(captured)}/{samples}", message)
                 cv2.imshow("Syntecxhub enrollment", preview)
+                window_shown = True
                 key = cv2.waitKey(1) & 0xFF
                 if key in (ord("q"), ord("Q"), 27):
                     raise EnrollmentError("Registration cancelled by user.")
@@ -122,8 +127,9 @@ class FaceRegistrationService:
                     captured.append((frame.copy(), detection))
                     last_capture_time = time.monotonic()
         finally:
-            capture.release()
-            cv2.destroyWindow("Syntecxhub enrollment")
+            session.release()
+            if window_shown:
+                safe_destroy_window("Syntecxhub enrollment")
 
         # Validate/embed every capture before one atomic multi-sample commit.
         prepared: list[tuple[np.ndarray, float, str | None]] = []
@@ -186,19 +192,85 @@ class FaceRegistrationService:
         return target
 
 
-def _open_camera(index: int) -> cv2.VideoCapture:
-    capture = cv2.VideoCapture(index, cv2.CAP_DSHOW) if hasattr(cv2, "CAP_DSHOW") else cv2.VideoCapture(index)
-    if not capture.isOpened():
-        capture.release()
-        capture = cv2.VideoCapture(index)
-    if not capture.isOpened():
-        raise CameraOpenError(
-            f"Unable to open camera index {index}. Check camera permissions, availability, and index."
-        )
-    return capture
+def _compose_enrollment_preview(
+    frame: np.ndarray,
+    detection: FaceDetection | None,
+    progress: str,
+    status: str,
+) -> np.ndarray:
+    """Render one bounded, non-overlapping enrollment UI onto a fresh frame."""
+    height, width = frame.shape[:2]
+    margin = max(6, min(14, width // 40))
+    header = _truncate_text(progress, max(1, width - 2 * margin), 0.62, 2)
+    footer = _truncate_text("SPACE: capture   Q: cancel", max(1, width - 2 * margin), 0.52, 1)
+    status_text = _truncate_text(status, max(1, width - 2 * margin), 0.52, 1)
+    header_size, header_baseline = _text_size(header, 0.62, 2)
+    footer_size, footer_baseline = _text_size(footer, 0.52, 1)
+    header_bottom = min(height, margin + header_size[1] + header_baseline + margin)
+    footer_top = max(0, height - margin - footer_size[1] - footer_baseline - margin)
+
+    _draw_panel_text(frame, header, (margin, min(height - 1, margin + header_size[1])), (0, 220, 255), 0.62, 2)
+    if detection is not None:
+        box = _clip_bbox(detection.bbox, width, height)
+        if box is not None:
+            x, y, box_width, box_height = box
+            cv2.rectangle(frame, (x, y), (x + box_width, y + box_height), (0, 220, 0), 2)
+            status_text = _place_status(frame, status_text, box, header_bottom, footer_top)
+    if detection is None:
+        _draw_panel_text(frame, status_text, (margin, min(footer_top - 4, header_bottom + _text_size(status_text, 0.52, 1)[0][1] + 8)), (0, 220, 255), 0.52, 1)
+    _draw_panel_text(frame, footer, (margin, max(0, min(height - 1, height - margin - footer_baseline))), (255, 255, 255), 0.52, 1)
+    return frame
 
 
-def _draw_enrollment_box(frame: np.ndarray, detection: FaceDetection, label: str) -> None:
-    x, y, width, height = detection.bbox
-    cv2.rectangle(frame, (x, y), (x + width, y + height), (0, 220, 0), 2)
-    cv2.putText(frame, label, (x, max(20, y - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 220, 0), 2)
+def _clip_bbox(bbox: tuple[int, int, int, int], width: int, height: int) -> tuple[int, int, int, int] | None:
+    x, y, box_width, box_height = bbox
+    left, top = max(0, x), max(0, y)
+    right, bottom = min(width - 1, x + box_width), min(height - 1, y + box_height)
+    if right <= left or bottom <= top:
+        return None
+    return left, top, right - left, bottom - top
+
+
+def _text_size(text: str, scale: float, thickness: int) -> tuple[tuple[int, int], int]:
+    return cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, thickness)
+
+
+def _truncate_text(text: str, max_width: int, scale: float, thickness: int) -> str:
+    if _text_size(text, scale, thickness)[0][0] <= max_width:
+        return text
+    suffix = "..."
+    value = text
+    while value and _text_size(value + suffix, scale, thickness)[0][0] > max_width:
+        value = value[:-1]
+    return (value + suffix) if value else suffix
+
+
+def _draw_panel_text(frame: np.ndarray, text: str, origin: tuple[int, int], color: tuple[int, int, int], scale: float, thickness: int) -> None:
+    x, baseline = origin
+    text_size, _ = _text_size(text, scale, thickness)
+    x = max(0, min(x, max(0, frame.shape[1] - text_size[0])))
+    baseline = max(text_size[1], min(baseline, frame.shape[0] - 1))
+    cv2.putText(frame, text, (x, baseline), cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness, cv2.LINE_AA)
+
+
+def _place_status(frame: np.ndarray, text: str, box: tuple[int, int, int, int], header_bottom: int, footer_top: int) -> str:
+    x, y, width, height = box
+    scale, thickness = 0.52, 1
+    text_size, baseline = _text_size(text, scale, thickness)
+    text_width, text_height = text_size
+    candidates = [
+        (x, y - 6),
+        (x, y + height + text_height + baseline + 6),
+        (x + 4, max(header_bottom + text_height + baseline + 4, y + text_height + baseline + 4)),
+    ]
+    for origin_x, origin_baseline in candidates:
+        left = max(0, min(origin_x, frame.shape[1] - text_width))
+        top = origin_baseline - baseline - text_height
+        bottom = origin_baseline + baseline
+        if top >= header_bottom and bottom <= footer_top and bottom < frame.shape[0]:
+            _draw_panel_text(frame, text, (left, origin_baseline), (0, 220, 255), scale, thickness)
+            return text
+    # A compact, bounded body fallback is preferable to drawing outside the image.
+    fallback_baseline = max(header_bottom + text_height + baseline + 2, min(footer_top - 2, frame.shape[0] - baseline - 1))
+    _draw_panel_text(frame, text, (4, fallback_baseline), (0, 220, 255), scale, thickness)
+    return text

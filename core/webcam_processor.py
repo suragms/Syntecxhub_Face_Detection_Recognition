@@ -8,6 +8,7 @@ import time
 import cv2
 
 from config import AppPaths
+from core.camera import CameraConfig, open_camera, safe_destroy_window
 from core.errors import CameraOpenError
 from core.image_processor import ImageProcessor
 from core.rendering import annotate_frame
@@ -27,26 +28,16 @@ class WebcamProcessor:
         self.height = height
 
     def run(self, camera_index: int = 0) -> WebcamSummary:
-        capture = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW) if hasattr(cv2, "CAP_DSHOW") else cv2.VideoCapture(camera_index)
-        if not capture.isOpened():
-            capture.release()
-            capture = cv2.VideoCapture(camera_index)
-        if not capture.isOpened():
-            raise CameraOpenError(
-                f"Unable to open camera index {camera_index}. Check camera permissions, availability, and index."
-            )
-        capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-        capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+        session = open_camera(camera_index, CameraConfig(width=self.width, height=self.height))
         frames = 0
         screenshots = 0
         last_tick = time.perf_counter()
         fps = 0.0
         self.paths.output_dir.mkdir(parents=True, exist_ok=True)
+        window_shown = False
         try:
             while True:
-                ok, frame = capture.read()
-                if not ok or frame is None:
-                    raise CameraOpenError("Camera disconnected or stopped returning frames.")
+                frame = session.read()
                 _, summary = self.image_processor.process_frame(frame)
                 now = time.perf_counter()
                 delta = max(now - last_tick, 1e-9)
@@ -55,6 +46,7 @@ class WebcamProcessor:
                 annotated = annotate_frame(frame, list(summary.results), fps=fps)
                 cv2.putText(annotated, "Q: quit   S: screenshot", (12, annotated.shape[0] - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
                 cv2.imshow("Syntecxhub Face Detection & Recognition", annotated)
+                window_shown = True
                 frames += 1
                 key = cv2.waitKey(1) & 0xFF
                 if key in (ord("q"), ord("Q"), 27):
@@ -65,6 +57,7 @@ class WebcamProcessor:
                         raise CameraOpenError(f"Could not save screenshot: {target}")
                     screenshots += 1
         finally:
-            capture.release()
-            cv2.destroyWindow("Syntecxhub Face Detection & Recognition")
+            session.release()
+            if window_shown:
+                safe_destroy_window("Syntecxhub Face Detection & Recognition")
         return WebcamSummary(frames_processed=frames, screenshots_saved=screenshots)

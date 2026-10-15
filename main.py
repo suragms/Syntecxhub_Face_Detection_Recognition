@@ -142,7 +142,15 @@ def dispatch(args: argparse.Namespace) -> int:
             result = service.register_image(args.name, args.input, append=args.append, retain_source=not args.no_retain_source)
             print(f"Registered {result.person.display_name}: sample {result.sample.sample_id}, quality {result.quality_score:.3f}")
         else:
-            results = service.capture_webcam(args.name, args.camera, args.samples, args.append, not args.no_retain_source)
+            results = service.capture_webcam(
+                args.name,
+                args.camera,
+                args.samples,
+                args.append,
+                not args.no_retain_source,
+                width=args.width,
+                height=args.height,
+            )
             print(f"Registered {results[0].person.display_name} with {len(results)} sample(s).")
         return 0
 
