@@ -127,12 +127,22 @@ class FaceRegistrationService:
 
         # Validate/embed every capture before one atomic multi-sample commit.
         prepared: list[tuple[np.ndarray, float, str | None]] = []
-        for frame, detection in captured:
-            quality = self.quality_score(frame, detection)
-            embedding = self.recognizer.embedding_from_detection(frame, detection)
-            source_file = self._write_normalized_crop(frame, detection) if retain_source else None
-            prepared.append((embedding, quality, str(source_file) if source_file else None))
-        person, stored_samples = self.database.add_samples(name, prepared, allow_existing=append)
+        created_sources: list[Path] = []
+        try:
+            for frame, detection in captured:
+                quality = self.quality_score(frame, detection)
+                embedding = self.recognizer.embedding_from_detection(frame, detection)
+                source_file = self._write_normalized_crop(frame, detection) if retain_source else None
+                if source_file:
+                    created_sources.append(source_file)
+                prepared.append((embedding, quality, str(source_file) if source_file else None))
+            person, stored_samples = self.database.add_samples(name, prepared, allow_existing=append)
+        except Exception:
+            # No database commit is attempted after an earlier capture failure;
+            # clean up any source crops that were staged for this cancelled run.
+            for source in created_sources:
+                source.unlink(missing_ok=True)
+            raise
         return [
             EnrollmentResult(person=person, sample=sample, quality_score=sample.quality_score)
             for sample in stored_samples
